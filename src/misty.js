@@ -148,13 +148,11 @@ var
           var feed = {};
           for (var i = 0; i < feedNode.childNodes.length; i++) {
             var node = feedNode.childNodes[i];
-            if ('name' == node.tagName)
-              feed.name = getInnerText(node);
-            else if ('created' == node.tagName)
+            if ('created' == node.tagName) {
               feed.created = fromDateTime8601(getInnerText(node));
-            else if ('updated' == node.tagName)
+            } else if ('updated' == node.tagName) {
               feed.updated = fromDateTime8601(getInnerText(node));
-            else if ('children' == node.tagName) {
+            } else if ('children' == node.tagName) {
               feed.children = [];
               for (var j = 0; j < node.childNodes.length; j++) {
                 var child = parseFeedNode(node.childNodes[j]);
@@ -173,6 +171,44 @@ var
                     feed.data.push({ key: parseKey(entry), value: value });
                 }
               }
+            } else if ('tag' == node.tagName) {
+              feed.tags ? feed.tags.push(getInnerText(node)) : (feed.tags = [ getInnerText(node) ]);
+            } else if ('location' == node.tagName) {
+              feed.location = {
+                domain      : node.getAttribute('domain'),
+                disposition : node.getAttribute('disposition'),
+                exposure    : node.getAttribute('exposure')
+              };
+              for (var j = 0; j < node.childNodes.length; j++) {
+                var childNode = node.childNodes[j];
+                if ('name' == childNode.tagName) {
+                  feed.location.name = getInnerText(childNode);
+                } else if ('waypoints' == childNode.tagName) {
+                  feed.location.waypoints = [];
+                  for (var k = 0; k < childNode.childNodes.length; k++) {
+                    var wpNode = childNode.childNodes[k], wp = {};
+                    for (var attrIndex in wpNode.attributes) {
+                      var attr = wpNode.attributes[attrIndex];
+                      if ('at' == attr.name) {
+                        wp[attr.name] = fromDateTime8601(attr.value);
+                      } else {
+                        wp[attr.name] = Number(attr.value);
+                      }
+                    }
+                    feed.location.waypoints.push(wp);
+                  }
+                } else {
+                  feed.location[childNode.tagName] = Number(getInnerText(childNode));
+                }
+              }
+            } else if ('unit' == node.tagName) {
+              feed.unit = {
+                label  : getInnerText(node),
+                symbol : node.getAttribute('symbol'),
+                type   : node.getAttribute('type')
+              };
+            } else {
+              feed[node.tagName] = getInnerText(node);
             }
           }
           return feed;
