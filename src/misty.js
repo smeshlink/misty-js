@@ -250,6 +250,7 @@ var
         return $.isArray(data.results) ? (data.results.length > 0 ? data.results[0] : null) : data;
       },
       format: function(data) {
+        // TODO better idea for compatibility?
         return JSON.stringify(data);
       }
     }
