@@ -1,4 +1,4 @@
-misty-js
+misty.js
 ========
 
 Misty Javascript Library
