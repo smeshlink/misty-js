@@ -212,6 +212,9 @@ var
       },
       parseFeed: function(data) {
         return $.isArray(data.results) ? (data.results.length > 0 ? data.results[0] : null) : data;
+      },
+      format: function(data) {
+        return JSON.stringify(data);
       }
     }
   },
@@ -225,7 +228,30 @@ var
     var
       misty = this,
       apiKey,
+      
+      events = {},
+      on = function(e, handler) {
+        var handlers = events[e];
+        if (!handlers)
+          events[e] = handlers = [];
+        handlers[handlers.length] = handler;
+      },
+      trigger = function(e, data) {
+        var handlers = events[e];
+        if (handlers) {
+          for (var i in handlers) {
+            handlers[i](data);
+          }
+        }
+      },
+      
       apiEndpoint = location.protocol + '//' + apiHost,
+      
+      socketEndpoint = 'ws://' + apiHost + ':9010',
+      socket = false,
+      socketReady = false,
+      queue = [],
+      resources = [],
       
       ajax = function(options) {
         var opts = $.extend({
@@ -268,6 +294,9 @@ var
         .always(opts.always);
       };
     
+    this.trigger = trigger;
+    this.on = on;
+    
     this.apiKey = function(key) {
       if (key)
         apiKey = key;
@@ -281,7 +310,108 @@ var
       if (type)
         dataType = type;
       return dataType;
-    }
+    };
+    this.socketEndpoint = function(uri) {
+      if (uri)
+        socketEndpoint = uri;
+      return socketEndpoint;
+    };
+    
+    this.socket = {
+      connect: function(callback) {
+        var WebSocket = (window.WebSocket || window.MozWebSocket);
+        
+        if (!socket && WebSocket) {
+          var ws = this;
+          
+          socket = new WebSocket(socketEndpoint);
+          
+          socket.onerror = function(e) {
+            ws.onerror && ws.onerror(e, this);
+          };
+          
+          socket.onclose = function(e) {
+            ws.onclose && ws.onclose(e, this);
+            socket = false;
+            setTimeout(function() {
+              ws.connect()
+            }, 1000);
+          };
+          
+          socket.onopen = function(e) {
+            socketReady = true;
+            ws.onopen && ws.onopen(e, this);
+            queue.length && execute(queue);
+            callback && callback(this);
+          };
+          
+          socket.onmessage = function(e) {
+            var response = $.parseJSON(e.data);
+            console.log(response);
+            if (response.body) {
+              ws.ondata && ws.ondata(response);
+              trigger('misty.' + response.resource, response.body);
+            }
+          };
+        }
+      },
+      
+      send: function(message) {
+        console.log(message);
+        if (typeof message === 'object')
+          message = JSON.stringify(message);
+        if (!socketReady) {
+          this.connect();
+          queue.push(function() {
+            socket.send(message);
+          });
+        } else {
+          socket.send(message);
+        }
+      }
+    };
+    
+    var subscribe = function(resource, callback) {
+      var request = { method: 'subscribe', headers: {} };
+      
+      if (misty.username && misty.password)
+        request.headers['Authorization'] = basicAuth(misty.username, misty.password);
+      else if (apiKey)
+        request.headers['X-ApiKey'] = apiKey;
+      //else
+      //  return console.log('(MistyJS) :: WARN :: No API key :: Set your API key first before calling any method.');
+      
+      if (resources.indexOf(resource) < 0) {
+        resources.push(resource);
+        request.resource = resource;
+        misty.socket.send(request);
+      }
+      
+      if (callback && typeof callback === 'function') {
+        on('misty.' + resource, callback);
+      }
+    };
+    
+    var unsubscribe = function(resource) {
+      var request = { method: 'unsubscribe', headers: {} };
+      
+      if (misty.username && misty.password)
+        request.headers['Authorization'] = basicAuth(misty.username, misty.password);
+      else if (apiKey)
+        request.headers['X-ApiKey'] = apiKey;
+      else
+        return console.log('(MistyJS) :: WARN :: No API key :: Set your API key first before calling any method.');
+      
+      var index = resources.indexOf(resource);
+      if (index >= 0) {
+        resources.splice(index, 1);
+        request.resource = resource;
+        misty.socket.send(request);
+      }
+    };
+    
+    this.subscribe = subscribe;
+    this.unsubscribe = unsubscribe;
     
     this.feed = {
       list: function(creator, options, done, fail) {
@@ -360,6 +490,23 @@ var
           url    : apiEndpoint + '/feeds/' + feed,
           always : callback
         });
+      },
+      
+      subscribe: function(creator, feed, callback) {
+        if (!feed || typeof feed === 'function') {
+          callback = feed;
+          feed = creator;
+          creator = undefined;
+        }
+        subscribe('/' + (creator || 'feeds') + '/' + feed, callback);
+      },
+      unsubscribe: function(creator, feed, callback) {
+        if (!feed || typeof feed === 'function') {
+          callback = feed;
+          feed = creator;
+          creator = undefined;
+        }
+        unsubscribe('/' + (creator || 'feeds') + '/' + feed, callback);
       }
     };
     
