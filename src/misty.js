@@ -304,6 +304,13 @@ var
       queue = [],
       resources = [],
       
+      authHeaders = function() {
+        if (misty.username && misty.password)
+          return { 'Authorization' : basicAuth(misty.username, misty.password) };
+        else if (apiKey)
+          return { 'X-ApiKey' : apiKey };
+      },
+      
       ajax = function(options) {
         var opts = $.extend({
           type: 'GET'
@@ -312,12 +319,9 @@ var
         if (!opts.url)
           return;
         
-        var headers = {};
-        if (misty.username && misty.password)
-          headers['Authorization'] = basicAuth(misty.username, misty.password);
-        else if (apiKey)
-          headers['X-ApiKey'] = apiKey;
-        else
+        var headers = authHeaders();
+        
+        if (!headers)
           return console.log('(MistyJS) :: WARN :: No API key :: Set your API key first before calling any method.');
         
         opts.type = opts.type.toUpperCase();
@@ -345,6 +349,7 @@ var
         .always(opts.always);
       };
     
+    this.authHeaders = authHeaders;
     this.trigger = trigger;
     this.on = on;
     
@@ -526,10 +531,15 @@ var
         });
       },
       
-      'new': function(data, callback) {
+      'new': function(feed, data, callback) {
+        if (typeof feed !== 'string') {
+          callback = data;
+          data = feed;
+          feed = undefined;
+        }
         ajax({
           type   : 'POST',
-          url    : apiEndpoint + '/feeds',
+          url    : apiEndpoint + (feed ? ('/feeds/' + feed) : '/feeds') + '.' + dataType,
           data   : data,
           always : callback
         });
