@@ -75,6 +75,20 @@ var
       return d;
     }
   },
+  
+  leadingZero = function(n) {
+    return n < 10 ? '0' + n : n;
+  },
+  
+  toDateTime8601 = function(date) {
+    var year = new String(date.getFullYear()),
+      month = leadingZero(date.getMonth() + 1),
+      day = leadingZero(date.getDate()),
+      time = leadingZero(date.getHours())
+        + ":" + leadingZero(date.getMinutes())
+        + ":" + leadingZero(date.getSeconds());
+    return year + '-' + month + '-' + day + "T" + time;
+  },
 
   // formatters
 
@@ -582,6 +596,8 @@ Misty.prototype = {
   version: _version,
 
   fromDateTime8601: fromDateTime8601,
+  
+  toDateTime8601: toDateTime8601,
 
   signIn: function(user, pwd, done, fail) {
     if (typeof user === 'function') {
