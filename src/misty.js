@@ -1,11 +1,11 @@
 /*!
  * Misty JavaScript Library v0.9.1
  *
- * Copyright 2009, 2013 SmeshLink Technology Co., Ltd.
+ * Copyright 2009, 2014 SmeshLink Technology Co., Ltd.
  *
- * Date: 2013-3-12
+ * Date: 2014-05-20
  */
-(function(window, $) {
+(function(window, $, undefined) {
 "use strict";
 
 var
@@ -13,16 +13,18 @@ var
   document = window.document,
   location = window.location,
 
+  // In some environment, console is defined but console.log or console.error is missing.
+  console = (window.console && window.console.log && window.console.error)
+    ? window.console : { log: function() { }, error: function() { } },
+
   // Default api host
-  _apiHost = window.location.host,
+  _apiHost = 'api.misty.smeshlink.com',
   _dataType = 'json',
-  _version = '0.9.1',
+  _version = '1.0.0',
   _verbose = true,
+  protocol = function() { return document.location.protocol === "https:" ? "https:" : "http:"; },
 
-  console,
-
-  // helpers
-
+  /* helpers */
   basicAuth = function(user, pwd) {
     return "Basic " + window.btoa(user + ':' + pwd);
   },
@@ -90,8 +92,16 @@ var
     return year + '-' + month + '-' + day + "T" + time;
   },
 
-  // formatters
+  indexOf = Array.indexOf || function(array, item, i) {
+    i || (i = 0);
+    var length = array.length;
+    if (i < 0) i = length + i;
+    for (; i < length; i++)
+    if (array[i] === item) return i;
+    return -1;
+  },
 
+  /* formatters */
   formatters = {
     'xml': (function() {
       var
@@ -162,7 +172,9 @@ var
           var feed = {};
           for (var i = 0; i < feedNode.childNodes.length; i++) {
             var node = feedNode.childNodes[i];
-            if ('created' == node.tagName) {
+            if ('name' == node.tagName) {
+              feed.name = getInnerText(node);
+            } else if ('created' == node.tagName) {
               feed.created = fromDateTime8601(getInnerText(node));
             } else if ('updated' == node.tagName) {
               feed.updated = fromDateTime8601(getInnerText(node));
@@ -269,6 +281,160 @@ var
       }
     }
   },
+  
+  /* channels */
+  HttpChannel = function(apiHost) {
+    var
+      apiEndpoint = protocol() + '//' + apiHost,
+
+      ajax = function(options) {
+        var opts = $.extend({
+          type: 'GET'
+        }, options);
+        
+        if (!opts.url)
+          return;
+        
+        var headers = opts.headers;
+        
+        if (!headers)
+          return console.log('(MistyJS) :: WARN :: No API key :: Set your API key first before calling any method.');
+        
+        opts.type = opts.type.toUpperCase();
+        
+        if (opts.type === 'PUT' || opts.type === 'POST') {
+          if (!opts.data || typeof opts.data !== 'object') {
+            return;
+          } else {
+            opts.data = formatters[opts.dataType].format(opts.data);
+          }
+        }
+        
+        $.ajax({
+          url         : opts.url,
+          type        : opts.type,
+          headers     : headers,
+          data        : opts.data,
+          dataType    : opts.dataType,
+          // failed on IE
+          //crossDomain : true,
+          cache       : true
+        })
+        .done(opts.done)
+        .fail(opts.fail)
+        .always(opts.always);
+      };
+
+    this.endpoint = function(uri) {
+      if (uri)
+        apiEndpoint = uri.startsWith('http:') || uri.startsWith('https:') ? uri : (protocol() + '//' + uri);
+      return apiEndpoint;
+    };
+
+    this.send = function(request, done, fail, always) {
+      if (!request) return;
+      if (request.method && request.method.toUpperCase() == 'CMD') {
+        request.method = 'POST';
+        request.resource = request.resource.replace(/\/\w+\//, '/command/');
+      }
+      ajax({
+        type     : request.method,
+        url      : apiEndpoint + request.resource + (request.format ? ('.' + request.format) : ''),
+        headers  : request.headers,
+        data     : request.data || request.params || request.body,
+        dataType : request.format,
+        done     : done,
+        fail     : function(jqXHR, textStatus, errorThrown)
+          { fail && fail(jqXHR.status, textStatus, errorThrown); },
+        always   : always
+      });
+    };
+  },
+  
+  WebSocketChannel = function(socketEndpoint, trigger) {
+    var
+      ws = this,
+      socket = false,
+      socketReady = false,
+      queue = [],
+      token = 0,
+      waitingRequests = {},
+      
+      send = function(message) {
+        console.log(message);
+        if (typeof message === 'object')
+          message = JSON.stringify(message);
+        if (!socketReady) {
+          connect();
+          queue.push(function() {
+            socket.send(message);
+          });
+        } else {
+          socket.send(message);
+        }
+      },
+    
+    connect = function(callback) {
+      var WebSocket = (window.WebSocket || window.MozWebSocket);
+
+      if (!socket && WebSocket) {
+        socket = new WebSocket(socketEndpoint);
+        
+        socket.onerror = function(e) {
+          ws.onerror && ws.onerror(e, this);
+        };
+        
+        socket.onclose = function(e) {
+          ws.onclose && ws.onclose(e, this);
+          socket = false;
+          setTimeout(function() {
+            connect()
+          }, 1000);
+        };
+        
+        socket.onopen = function(e) {
+          socketReady = true;
+          ws.onopen && ws.onopen(e, this);
+          queue.length && execute(queue);
+          callback && callback(this);
+        };
+        
+        socket.onmessage = function(e) {
+          var response = $.parseJSON(e.data);
+          console.log(response);
+          var waiting = waitingRequests[response.token];
+          if (waiting) {
+            waitingRequests[response.token] = undefined;
+            if (response.status < 300)
+              waiting.done && waiting.done(response.body);
+            else
+              waiting.fail && waiting.fail(response.status);
+            waiting.always && waiting.always();
+            return;
+          }
+          if (response.body) {
+            ws.ondata && ws.ondata(response);
+            trigger('misty.' + response.resource, response.body);
+          }
+        };
+      }
+    };
+    
+    this.send = function(request, done, fail, always) {
+      if (!request) return;
+      if (!request.headers)
+          return console.log('(MistyJS) :: WARN :: No API key :: Set your API key first before calling any method.');
+      request.headers['User-Agent'] = 'MistyJS/' + _version;
+      if (!request.method) request.method = 'GET';
+      if (!request.token) request.token = token++;
+      if (!request.body && request.data) {
+        request.body = request.data;
+        delete request.data;
+      }
+      waitingRequests[request.token] = { request: request, done: done, fail: fail, always: always };
+      send(request);
+    };
+  },
 
   /* Misty object */
 
@@ -296,12 +462,9 @@ var
         }
       },
       
-      apiEndpoint = location.protocol + '//' + apiHost,
-      
-      socketEndpoint = 'ws://' + apiHost + ':9010',
-      socket = false,
-      socketReady = false,
-      queue = [],
+      socketEndpoint = (protocol() === 'https:' ? 'wss:' : 'ws:') + apiHost + ':9010',
+      preferHTTP = true,
+      _http, _ws,
       resources = [],
       
       authHeaders = function() {
@@ -309,63 +472,19 @@ var
           return { 'Authorization' : basicAuth(misty.username, misty.password) };
         else if (apiKey)
           return { 'X-ApiKey' : apiKey };
-      },
-      
-      ajax = function(options) {
-        var opts = $.extend({
-          type: 'GET'
-        }, options);
-        
-        if (!opts.url)
-          return;
-        
-        var headers = authHeaders();
-        
-        if (!headers)
-          return console.log('(MistyJS) :: WARN :: No API key :: Set your API key first before calling any method.');
-        
-        opts.type = opts.type.toUpperCase();
-        
-        if (opts.type === 'PUT' || opts.type === 'POST') {
-          if (!opts.data || typeof opts.data !== 'object') {
-            return;
-          } else {
-            opts.data = formatters[dataType].format(opts.data);
-          }
-        }
-        
-        $.ajax({
-          url         : opts.url,
-          type        : opts.type,
-          headers     : headers,
-          data        : opts.data,
-          dataType    : dataType,
-          // failed on IE
-          //crossDomain : true,
-          cache       : true
-        })
-        .done(opts.done)
-        .fail(opts.fail)
-        .always(opts.always);
       };
-    
-    this.authHeaders = authHeaders;
-    this.trigger = trigger;
-    this.on = on;
     
     this.apiKey = function(key) {
       if (key)
         apiKey = key;
     };
-    this.apiEndpoint = function(uri) {
-      if (uri)
-        apiEndpoint = uri;
-      return apiEndpoint;
-    };
     this.dataType = function(type) {
       if (type)
         dataType = type;
       return dataType;
+    };
+    this.apiEndpoint = function(uri) {
+      return misty.http().endpoint(uri);
     };
     this.socketEndpoint = function(uri) {
       if (uri)
@@ -373,74 +492,38 @@ var
       return socketEndpoint;
     };
     
-    this.socket = {
-      connect: function(callback) {
-        var WebSocket = (window.WebSocket || window.MozWebSocket);
-        
-        if (!socket && WebSocket) {
-          var ws = this;
-          
-          socket = new WebSocket(socketEndpoint);
-          
-          socket.onerror = function(e) {
-            ws.onerror && ws.onerror(e, this);
-          };
-          
-          socket.onclose = function(e) {
-            ws.onclose && ws.onclose(e, this);
-            socket = false;
-            setTimeout(function() {
-              ws.connect()
-            }, 1000);
-          };
-          
-          socket.onopen = function(e) {
-            socketReady = true;
-            ws.onopen && ws.onopen(e, this);
-            queue.length && execute(queue);
-            callback && callback(this);
-          };
-          
-          socket.onmessage = function(e) {
-            var response = $.parseJSON(e.data);
-            console.log(response);
-            if (response.body) {
-              ws.ondata && ws.ondata(response);
-              trigger('misty.' + response.resource, response.body);
-            }
-          };
-        }
-      },
-      
-      send: function(message) {
-        console.log(message);
-        if (typeof message === 'object')
-          message = JSON.stringify(message);
-        if (!socketReady) {
-          this.connect();
-          queue.push(function() {
-            socket.send(message);
-          });
-        } else {
-          socket.send(message);
-        }
+    this.http = function() {
+      if (_http)
+        return _http;
+      return _http = new HttpChannel(apiHost);
+    };
+    
+    this.socket = function() {
+      if (_ws)
+        return _ws;
+      return _ws = new WebSocketChannel(socketEndpoint, trigger);
+    };
+    
+    this.preferHTTP = function(b) {
+      if (typeof b !== 'undefined') {
+        preferHTTP = !!b;
+        if (!preferHTTP) this.dataType('json');
       }
+      return preferHTTP;
+    };
+    
+    var channel = function() {
+      return preferHTTP ? misty.http() : misty.socket();
     };
     
     var subscribe = function(resource, callback) {
-      var request = { method: 'subscribe', headers: {} };
-      
-      if (misty.username && misty.password)
-        request.headers['Authorization'] = basicAuth(misty.username, misty.password);
-      else if (apiKey)
-        request.headers['X-ApiKey'] = apiKey;
-      //else
-      //  return console.log('(MistyJS) :: WARN :: No API key :: Set your API key first before calling any method.');
-      
-      if (resources.indexOf(resource) < 0) {
+      if (indexOf(resources, resource) < 0) {
         resources.push(resource);
-        request.resource = resource;
-        misty.socket.send(request);
+        misty.socket().send({
+          method   : 'subscribe',
+          headers  : authHeaders(),
+          resource : resource
+        });
       }
       
       if (callback && typeof callback === 'function') {
@@ -449,158 +532,203 @@ var
     };
     
     var unsubscribe = function(resource) {
-      var request = { method: 'unsubscribe', headers: {} };
-      
-      if (misty.username && misty.password)
-        request.headers['Authorization'] = basicAuth(misty.username, misty.password);
-      else if (apiKey)
-        request.headers['X-ApiKey'] = apiKey;
-      else
-        return console.log('(MistyJS) :: WARN :: No API key :: Set your API key first before calling any method.');
-      
-      var index = resources.indexOf(resource);
+      var index = indexOf(resources, resource);
       if (index >= 0) {
         resources.splice(index, 1);
-        request.resource = resource;
-        misty.socket.send(request);
+        misty.socket().send({
+          method   : 'unsubscribe',
+          headers  : authHeaders(),
+          resource : resource
+        });
       }
     };
     
-    this.subscribe = subscribe;
-    this.unsubscribe = unsubscribe;
+    var command = function(resource, cmd, callback) {
+      channel().send({
+        method   : 'cmd',
+        resource : resource,
+        headers  : authHeaders(),
+        data     : cmd
+      }, function(data) {
+        callback && callback(data);
+      }, function(status) {
+        callback && callback(undefined, status);
+      });
+    };
     
-    this.feed = {
-      list: function(creator, options, done, fail) {
-        if (typeof creator === 'function') {
-          done = creator;
-          fail = options;
-          creator = options = undefined;
-        } else if (typeof creator === 'object') {
-          fail = done;
-          done = options;
-          options = creator;
-          creator = undefined;
+    var FeedService = function(ctx) {
+      ctx = ctx && ctx.trim();
+      this.ctx = !ctx ? '/feeds' : (ctx[0] == '/' ? ctx : ('/' + ctx));
+    };
+    var EntryService = function(ctx) {
+      this.ctx = ctx;
+    };
+    
+    FeedService.prototype = {
+      list : function(options, callback) {
+        if (typeof options === 'function') {
+          callback = options;
+          options = undefined;
         }
-        
-        ajax({
-          url  : apiEndpoint + '/' + (creator || 'feeds') + '.' + dataType,
-          data : options,
-          done : function(data) {
-            done && done(formatters[dataType].parseFeeds(data));
-          },
-          fail : function(jqXHR, textStatus, errorThrown) {
-            (404 == jqXHR.status) ? (done && done())
-              : (fail && fail(jqXHR, textStatus, errorThrown));
-          }
+        channel().send({
+          headers  : authHeaders(),
+          resource : this.ctx,
+          params     : options,
+          format   : dataType,
+        }, function(data) {
+          callback && callback(formatters[dataType].parseFeeds(data));
+        }, function(status, textStatus, errorThrown) {
+          callback && callback(undefined, status, textStatus, errorThrown);
         });
       },
       
-      find: function(creator, feed, options, done, fail) {
-        if (typeof feed !== 'string') {
-          fail = done;
-          done = options;
-          options = feed;
-          feed = creator;
-          creator = undefined;
+      find : function(path, options, callback) {
+        if (typeof path !== 'string') {
+          callback = options;
+          options = path;
+          path = undefined;
           if (typeof options === 'function') {
-            fail = done;
-            done = options;
+            callback = options;
             options = undefined;
           }
         }
-        
-        ajax({
-          url  : apiEndpoint + '/' + (creator || 'feeds') + '/' + feed + '.' + dataType,
-          data : options,
-          done : function(data) {
-            done && done(formatters[dataType].parseFeed(data));
-          },
-          fail : function(jqXHR, textStatus, errorThrown) {
-            (404 == jqXHR.status) ? (done && done())
-              : (fail && fail(jqXHR, textStatus, errorThrown));
-          }
+        channel().send({
+          headers  : authHeaders(),
+          resource : this.ctx + '/' + path,
+          params     : options,
+          format   : dataType,
+        }, function(data) {
+          callback && callback(formatters[dataType].parseFeed(data));
+        }, function(status, textStatus, errorThrown) {
+          callback && callback(undefined, status, textStatus, errorThrown);
         });
       },
       
-      update: function(feed, data, callback) {
-        ajax({
-          type   : 'PUT',
-          url  : apiEndpoint + '/feeds/' + feed + '.' + dataType,
-          data : data,
-          always : callback
+      update : function(feed, callback) {
+        var path = feed.name ? ('/' + feed.name) : '';
+        channel().send({
+          method   : 'PUT',
+          headers  : authHeaders(),
+          resource : this.ctx + path,
+          data     : data,
+          format   : dataType,
+        }, function(data) {
+          callback && callback(true);
+        }, function(status, textStatus, errorThrown) {
+          callback && callback(false, status, textStatus, errorThrown);
         });
       },
       
-      'new': function(feed, data, callback) {
-        if (typeof feed !== 'string') {
-          callback = data;
-          data = feed;
-          feed = undefined;
+      'new' : function(feed, callback) {
+        channel().send({
+          method   : 'POST',
+          headers  : authHeaders(),
+          resource : this.ctx,
+          data     : feed,
+          format   : dataType,
+        }, function(data) {
+          callback && callback(true);
+        }, function(status, textStatus, errorThrown) {
+          callback && callback(false, status, textStatus, errorThrown);
+        });
+      },
+      
+      'delete' : function(path, callback) {
+        channel().send({
+          method   : 'DELETE',
+          headers  : authHeaders(),
+          resource : this.ctx + '/' + path,
+        }, function(data) {
+          callback && callback(true);
+        }, function(status, textStatus, errorThrown) {
+          callback && callback(false, status, textStatus, errorThrown);
+        });
+      },
+      
+      subscribe : function(path, callback) {
+        if (typeof path === 'function') {
+          callback = path;
+          path = undefined;
         }
-        ajax({
-          type   : 'POST',
-          url    : apiEndpoint + (feed ? ('/feeds/' + feed) : '/feeds') + '.' + dataType,
-          data   : data,
-          always : callback
-        });
+        path = path ? (this.ctx + '/' + path) : this.ctx;
+        subscribe(path, callback);
       },
       
-      'delete': function(feed, callback) {
-        ajax({
-          type   : 'DELETE',
-          url    : apiEndpoint + '/feeds/' + feed,
-          always : callback
-        });
+      unsubscribe : function(path) {
+        if (typeof path === 'function') {
+          callback = path;
+          path = undefined;
+        }
+        path = path ? (this.ctx + '/' + path) : this.ctx;
+        unsubscribe(path);
       },
       
-      subscribe: function(creator, feed, callback) {
-        if (!feed || typeof feed === 'function') {
-          callback = feed;
-          feed = creator;
-          creator = undefined;
+      command : function(path, cmd, callback) {
+        if (typeof cmd === 'function') {
+          callback = cmd;
+          cmd = path;
+          path = undefined;
         }
-        subscribe('/' + (creator || 'feeds') + '/' + feed, callback);
+        path = path ? (this.ctx + '/' + path) : this.ctx;
+        command(path, cmd, callback);
       },
-      unsubscribe: function(creator, feed, callback) {
-        if (!feed || typeof feed === 'function') {
-          callback = feed;
-          feed = creator;
-          creator = undefined;
-        }
-        unsubscribe('/' + (creator || 'feeds') + '/' + feed, callback);
+      
+      feed : function(path) {
+        return path ? new FeedService(this.ctx + '/' + path) : this;
+      },
+      
+      entry : function(path) {
+        return new EntryService(this.ctx + '/' + path);
       }
     };
     
-    this.entry = {
-      find: function(creator, feed, key, done, fail) {
-        if (typeof key === 'function') {
-          fail = done;
-          done = key;
-          key = feed;
-          feed = creator;
-          creator = undefined; 
-        }
-        
-        ajax({
-          url  : apiEndpoint + '/' + (creator || 'feeds') + '/' + feed + '@' + key + '.' + dataType,
-          done : function(data) {
-            done && done(formatters[dataType].parseEntry(data));
-          },
-          fail : function(jqXHR, textStatus, errorThrown) {
-            (404 == jqXHR.status) ? (done && done())
-              : (fail && fail(jqXHR, textStatus, errorThrown));
-          }
+    EntryService.prototype = {
+      find : function(key, callback) {
+        channel().send({
+          headers  : authHeaders(),
+          resource : this.ctx + '@' + key + '.' + dataType,
+        }, function(data) {
+          callback && callback(formatters[dataType].parseEntry(data));
+        }, function(status, textStatus, errorThrown) {
+          callback && callback(undefined, status, textStatus, errorThrown);
         });
       }
     };
+    
+    this.user = function(creator) {
+      return new FeedService(creator);
+    };
+    this.feed = function(parent) {
+      parent = (parent && parent.trim()) || '';
+      return new FeedService('/feeds' + (!parent || parent[0] == '/' ? parent : ('/' + parent)));
+    };
+    this.entry = function(creator, path) {
+      if (typeof path === 'undefined') {
+        path = creator;
+        creator = undefined;
+      }
+      return misty.feed(creator).entry(path);
+    };
+    this.subscribe = function(creator, feed, callback) {
+      if (!feed || typeof feed === 'function') {
+        callback = feed;
+        feed = creator;
+        creator = undefined;
+      }
+      misty.user(creator).subscribe(feed, callback);
+    };
+    this.unsubscribe = function(creator, feed, callback) {
+      if (!feed || typeof feed === 'function') {
+        callback = feed;
+        feed = creator;
+        creator = undefined;
+      }
+      misty.user(creator).unsubscribe(feed);
+    };
+    this.command = function(feed, callback) {
+      misty.feed().command(feed, callback);
+    };
   };
-
-if (window.console && window.console.log && window.console.error) {
-  // In some environment, console is defined but console.log or console.error is missing.
-  console = window.console;
-} else {
-  console = { log: function() { }, error: function() { } };
-}
 
 Misty.prototype = {
   version: _version,
