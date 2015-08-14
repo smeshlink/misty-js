@@ -358,6 +358,7 @@ var
       socketReady = false,
       queue = [],
       token = 0,
+      reconnectInterval = 3000,
       waitingRequests = {},
       
       send = function(message) {
@@ -389,7 +390,7 @@ var
           socket = false;
           setTimeout(function() {
             connect()
-          }, 1000);
+          }, reconnectInterval);
         };
         
         socket.onopen = function(e) {
@@ -418,6 +419,11 @@ var
           }
         };
       }
+    };
+    
+    this.reconnectInterval = function(i) {
+      if (i) reconnectInterval = i;
+      return reconnectInterval;
     };
     
     this.send = function(request, done, fail, always) {
