@@ -776,6 +776,17 @@ window.misty = new Misty();
 
 })(window, jQuery);
 
+if (typeof String.prototype.startsWith === 'undefined') {
+  String.prototype.startsWith = function (str){
+    return this.slice(0, str.length) == str;
+  };
+}
+if (typeof String.prototype.endsWith === 'undefined') {
+  String.prototype.endsWith = function (str){
+    return this.slice(-str.length) == str;
+  };
+}
+
 if (typeof window.btoa == 'undefined' || typeof window.atob == 'undefined') {
   var Base64 = {
     // private property
