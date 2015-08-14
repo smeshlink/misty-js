@@ -493,8 +493,12 @@ var
       return misty.http().endpoint(uri);
     };
     this.socketEndpoint = function(uri) {
-      if (uri)
-        socketEndpoint = uri;
+      if (uri) {
+        if (uri.startsWith('ws:') || uri.startsWith('wss:'))
+          socketEndpoint = uri;
+        else
+          socketEndpoint = (protocol() === 'https:' ? 'wss:' : 'ws:') + uri + ':9010';
+      }
       return socketEndpoint;
     };
     
