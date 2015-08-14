@@ -660,7 +660,7 @@ var
           callback = path;
           path = undefined;
         }
-        path = path ? (this.ctx + '/' + path) : this.ctx;
+        path = path ? (path[0] == '/' ? path : (this.ctx + '/' + path)) : this.ctx;
         subscribe(path, callback);
       },
       
